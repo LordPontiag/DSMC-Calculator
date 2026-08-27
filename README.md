@@ -20,6 +20,8 @@ A lightweight, physics-based engineering tool for the **preliminary design and n
 
 Provide the macroscopic state (e.g., temperature, pressure, velocity) and characteristic lengths. The tool outputs molecular properties, dimensionless numbers, and recommended DSMC grid/time parameters.
 
+Easily run executable files on Linux or Windows, or you can run the python script. 
+
 ```bash
 # Example (pseudo-command)
 python dsmc_calc.py
