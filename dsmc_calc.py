@@ -2,7 +2,8 @@
 """
 DSMC Setup Calculator - Enhanced Version
 - Dimensions in brackets
-- Velocity/Mach selection
+- Velocity/Mach selection (Mach mode keeps V or T constant)
+- Two-way particle weighting (Nppc <-> nEquivalentParticles)
 - Formulas panel
 - Fluid name input
 - Hint icons
@@ -83,6 +84,7 @@ SPECIES_FIELDS = [
 FLOW_FIELDS = [
     ("T", "Temperature, T", "150", "K"),
     ("U", "Bulk velocity, U", "736.5", "m/s"),
+    ("M", "Mach number, M", "3.0", ""),
     ("P", "Pressure, P", "1.0", "Pa"),
     ("n", "Number density, n", "4e20", "m⁻³"),
 ]
@@ -91,7 +93,8 @@ MESH_FIELDS = [
     ("Vdomain", "Domain volume, V", "1.0", "m³"),
     ("Ncells", "Number of cells", "100000", ""),
     ("Vcell", "Cell volume, V_cell", "", "m³"),
-    ("Nppc", "Particles per cell", "20", ""),
+    ("Nppc", "Particles per cell, Nppc", "20", ""),
+    ("nEquivalentParticles", "nEquivalentParticles", "", ""),
 ]
 
 LENGTH_FIELDS = [
@@ -304,7 +307,10 @@ class DSMCCalculator(tk.Tk):
         self.re_vars = {}
         self.density_mode = tk.StringVar(value="P")
         self.velocity_mode = tk.StringVar(value="U")
+        self.mach_constraint_mode = tk.StringVar(value="U")
         self.volume_mode = tk.StringVar(value="domain")
+        self.particle_mode = tk.StringVar(value="Nppc")
+        self.setup_entries = {}
         self.viscous_var = tk.BooleanVar(value=True)
         self.re_density_mode = tk.StringVar(value="P")
         
@@ -390,14 +396,61 @@ class DSMCCalculator(tk.Tk):
         ttk.Radiobutton(density_frame, text="Pressure (P)", variable=self.density_mode, value="P").pack(side="left", padx=10)
         ttk.Radiobutton(density_frame, text="Number density (n)", variable=self.density_mode, value="n").pack(side="left")
         
-        # Velocity mode
+        # Velocity / Mach mode
         velocity_frame = ttk.Frame(flow_frame)
-        velocity_frame.pack(fill="x", pady=(0, 10))
-        ttk.Label(velocity_frame, text="Specify velocity by:").pack(side="left")
-        ttk.Radiobutton(velocity_frame, text="Velocity U", variable=self.velocity_mode, value="U").pack(side="left", padx=10)
-        ttk.Radiobutton(velocity_frame, text="Mach number M", variable=self.velocity_mode, value="M").pack(side="left")
-        
-        self.create_input_fields(flow_frame, FLOW_FIELDS, self.vars)
+        velocity_frame.pack(fill="x", pady=(0, 5))
+
+        ttk.Label(velocity_frame, text="Specify flow speed by:").pack(side="left")
+
+        ttk.Radiobutton(
+            velocity_frame,
+            text="Velocity U",
+            variable=self.velocity_mode,
+            value="U",
+            command=self.update_flow_controls
+        ).pack(side="left", padx=10)
+
+        ttk.Radiobutton(
+            velocity_frame,
+            text="Mach number M",
+            variable=self.velocity_mode,
+            value="M",
+            command=self.update_flow_controls
+        ).pack(side="left")
+
+        # Mach constraint selection
+        self.mach_constraint_frame = ttk.Frame(flow_frame)
+
+        ttk.Label(
+            self.mach_constraint_frame,
+            text="For Mach mode, keep:"
+        ).pack(side="left")
+
+        ttk.Radiobutton(
+            self.mach_constraint_frame,
+            text="Velocity U constant",
+            variable=self.mach_constraint_mode,
+            value="U",
+            command=self.update_flow_controls
+        ).pack(side="left", padx=10)
+
+        ttk.Radiobutton(
+            self.mach_constraint_frame,
+            text="Temperature T constant",
+            variable=self.mach_constraint_mode,
+            value="T",
+            command=self.update_flow_controls
+        ).pack(side="left")
+
+        # Flow input fields
+        self.create_input_fields(
+            flow_frame,
+            FLOW_FIELDS,
+            self.vars,
+            entry_registry=self.setup_entries
+        )
+
+        self.update_flow_controls()
         
         # Mesh section
         mesh_frame = ttk.LabelFrame(left, text="🔲 Mesh & Particle Weighting", padding=10)
@@ -407,7 +460,29 @@ class DSMCCalculator(tk.Tk):
         ttk.Label(volume_frame, text="Specify cell volume by:").pack(side="left")
         ttk.Radiobutton(volume_frame, text="Domain + N_cells", variable=self.volume_mode, value="domain").pack(side="left", padx=10)
         ttk.Radiobutton(volume_frame, text="Direct V_cell", variable=self.volume_mode, value="cell").pack(side="left")
-        self.create_input_fields(mesh_frame, MESH_FIELDS, self.vars)
+
+        # Particle weighting mode
+        particle_frame = ttk.Frame(mesh_frame)
+        particle_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(particle_frame, text="Specify particle weighting by:").pack(side="left")
+        ttk.Radiobutton(
+            particle_frame,
+            text="Particles per cell (Nppc)",
+            variable=self.particle_mode,
+            value="Nppc",
+            command=self.update_particle_controls
+        ).pack(side="left", padx=10)
+        ttk.Radiobutton(
+            particle_frame,
+            text="nEquivalentParticles",
+            variable=self.particle_mode,
+            value="nEq",
+            command=self.update_particle_controls
+        ).pack(side="left")
+
+        self.create_input_fields(mesh_frame, MESH_FIELDS, self.vars, entry_registry=self.setup_entries)
+
+        self.update_particle_controls()
         
         # Length section with hints
         length_frame = ttk.LabelFrame(left, text="📏 Reference Lengths & Time Step", padding=10)
@@ -486,6 +561,8 @@ class DSMCCalculator(tk.Tk):
 3. SOUND SPEED
    a = √(γ·R·T)
    where R = k_B/m
+   (Mach mode, T constant:  U = M·a)
+   (Mach mode, U constant:  a = U/M, T = a²/(γ·R))
 
 4. MACH NUMBER
    M = U/a
@@ -510,13 +587,18 @@ class DSMCCalculator(tk.Tk):
     Kn = λ/L_Kn
 
 11. REYNOLDS NUMBER
-    Re = ·U·L_Re/μ
+    Re = ρ·U·L_Re/μ
 
 12. CELL SIZE
     Δx = V_cell^(1/3)
 
-13. nEQUIVALENT PARTICLES
+13. PARTICLE WEIGHTING
     n_eq = (n·V_cell)/N_ppc
+    N_ppc = (n·V_cell)/n_eq
+
+    where:
+      n_eq = real molecules represented by one DSMC particle
+      N_ppc = simulated particles per cell
 
 14. TIME STEP
     Δt_coll = f₁·τ
@@ -549,7 +631,7 @@ For Argon (Ar):
         formulas_text.insert("1.0", formulas)
         formulas_text.configure(state="disabled")
     
-    def create_input_fields(self, parent, field_list, vars_dict):
+    def create_input_fields(self, parent, field_list, vars_dict, entry_registry=None):
         for i, (key, label, default, unit) in enumerate(field_list):
             row = ttk.Frame(parent)
             row.pack(fill="x", pady=3)
@@ -559,28 +641,136 @@ For Argon (Ar):
             vars_dict[key] = var
             entry = ttk.Entry(row, textvariable=var, width=22)
             entry.pack(side="left", padx=10)
+            if entry_registry is not None:
+                entry_registry[key] = entry
             if unit:
                 ttk.Label(row, text=unit, width=12, anchor="w", foreground='gray').pack(side="left")
+
+    def update_flow_controls(self):
+        """Enable/disable T, U, and M fields according to the selected mode."""
+        mode = self.velocity_mode.get()
+
+        # Hide Mach-specific options in normal velocity mode
+        if mode == "M":
+            self.mach_constraint_frame.pack(fill="x", pady=(0, 10))
+        else:
+            self.mach_constraint_frame.pack_forget()
+
+        # Make sure the required entries exist
+        if not all(k in self.setup_entries for k in ("T", "U", "M")):
+            return
+
+        T_entry = self.setup_entries["T"]
+        U_entry = self.setup_entries["U"]
+        M_entry = self.setup_entries["M"]
+
+        if mode == "U":
+            # U and T are independent inputs
+            T_entry.configure(state="normal")
+            U_entry.configure(state="normal")
+            M_entry.configure(state="disabled")
+
+        elif self.mach_constraint_mode.get() == "U":
+            # M + U -> calculate T
+            M_entry.configure(state="normal")
+            U_entry.configure(state="normal")
+            T_entry.configure(state="disabled")
+
+        else:
+            # M + T -> calculate U
+            M_entry.configure(state="normal")
+            T_entry.configure(state="normal")
+            U_entry.configure(state="disabled")
+
+    def update_particle_controls(self):
+        """Enable the selected particle quantity and disable the calculated one."""
+        if not all(
+            k in self.setup_entries
+            for k in ("Nppc", "nEquivalentParticles")
+        ):
+            return
+
+        Nppc_entry = self.setup_entries["Nppc"]
+        nEq_entry = self.setup_entries["nEquivalentParticles"]
+
+        if self.particle_mode.get() == "Nppc":
+            Nppc_entry.configure(state="normal")
+            nEq_entry.configure(state="disabled")
+        else:
+            Nppc_entry.configure(state="disabled")
+            nEq_entry.configure(state="normal")
+
+    def resolve_flow_state(self):
+        """
+        Resolve T, U, sound speed and Mach number according to the selected
+        velocity/Mach mode. Writes the computed quantity back into its field.
+        Returns (T, U, a, M, R).
+        """
+        mass = get_float(self.vars, ALL_LABELS, "mass")
+        gamma = get_float(self.vars, ALL_LABELS, "gamma")
+
+        if mass <= 0:
+            raise ValueError("Molecular mass must be positive.")
+        if gamma <= 0:
+            raise ValueError("Specific heat ratio gamma must be positive.")
+
+        R = K_B / mass
+
+        # Direct velocity mode: T and U are inputs, M is output
+        if self.velocity_mode.get() == "U":
+            T = get_float(self.vars, ALL_LABELS, "T")
+            U = get_float(self.vars, ALL_LABELS, "U")
+
+            if T <= 0:
+                raise ValueError("Temperature must be positive.")
+            if U < 0:
+                raise ValueError("Velocity cannot be negative.")
+
+            a = sound_speed(gamma, R, T)
+            M = U / a
+
+            self.vars["M"].set(f"{M:.6g}")
+            return T, U, a, M, R
+
+        # Mach mode: M is input
+        M = get_float(self.vars, ALL_LABELS, "M")
+        if M <= 0:
+            raise ValueError("Mach number must be positive.")
+
+        # M + U -> calculate T
+        if self.mach_constraint_mode.get() == "U":
+            U = get_float(self.vars, ALL_LABELS, "U")
+
+            if U < 0:
+                raise ValueError("Velocity cannot be negative.")
+
+            a = U / M
+            T = a ** 2 / (gamma * R)
+
+            self.vars["T"].set(f"{T:.6g}")
+
+        # M + T -> calculate U
+        else:
+            T = get_float(self.vars, ALL_LABELS, "T")
+
+            if T <= 0:
+                raise ValueError("Temperature must be positive.")
+
+            a = sound_speed(gamma, R, T)
+            U = M * a
+
+            self.vars["U"].set(f"{U:.6g}")
+
+        return T, U, a, M, R
     
     def auto_recovery_temp(self):
         try:
             mass = get_float(self.vars, ALL_LABELS, "mass")
             gamma = get_float(self.vars, ALL_LABELS, "gamma")
             Pr = get_float(self.vars, ALL_LABELS, "Pr")
-            T = get_float(self.vars, ALL_LABELS, "T")
-            
-            # Calculate Mach based on mode
-            if self.velocity_mode.get() == "U":
-                U = get_float(self.vars, ALL_LABELS, "U")
-            else:
-                M_input = get_float(self.vars, ALL_LABELS, "M")
-                R = K_B / mass
-                a = sound_speed(gamma, R, T)
-                U = M_input * a
-            
-            R = K_B / mass
-            a = sound_speed(gamma, R, T)
-            M = U / a
+
+            T, U, a, M, R = self.resolve_flow_state()
+
             Tr = recovery_temperature(T, gamma, M, Pr)
             self.vars["Tw"].set(f"{Tr:.2f}")
             messagebox.showinfo("Recovery Temperature", f"Mach = {fmt(M)}\nRecovery T = {fmt(Tr)} K\n\nFilled into T_w field")
@@ -606,31 +796,26 @@ For Argon (Ar):
             Tref = get_float(self.vars, ALL_LABELS, "Tref")
             gamma = get_float(self.vars, ALL_LABELS, "gamma")
             Pr = get_float(self.vars, ALL_LABELS, "Pr")
-            T = get_float(self.vars, ALL_LABELS, "T")
-            
-            # Handle velocity/Mach selection
-            if self.velocity_mode.get() == "U":
-                U = get_float(self.vars, ALL_LABELS, "U")
-            else:
-                M_input = get_float(self.vars, ALL_LABELS, "M")
-                R = K_B / mass
-                a = sound_speed(gamma, R, T)
-                U = M_input * a
-            
+
+            # Resolve T, U, a and M from the selected flow-speed mode
+            T, U, a, M, R = self.resolve_flow_state()
+
+            # Density / pressure (evaluated after the resolved temperature)
             if self.density_mode.get() == "P":
                 P_input = get_float(self.vars, ALL_LABELS, "P")
                 P = P_input * rarefaction
+                if P <= 0:
+                    raise ValueError("Pressure must be positive.")
                 n = P / (K_B * T)
             else:
                 n_input = get_float(self.vars, ALL_LABELS, "n")
                 n = n_input * rarefaction
+                if n <= 0:
+                    raise ValueError("Number density must be positive.")
                 P = n * K_B * T
             
             rho = n * mass
-            R = K_B / mass
-            a = sound_speed(gamma, R, T)
-            M = U / a
-            
+
             sigma = vhs_cross_section(dref, Tref, omega, T)
             lam = mean_free_path(n, sigma)
             c_bar = mean_thermal_speed(mass, T)
@@ -689,17 +874,36 @@ For Argon (Ar):
             else:
                 lines.append("  → Free molecular flow")
             
-            Nppc = get_float(self.vars, ALL_LABELS, "Nppc")
+            # Mesh & particle weighting
             if self.volume_mode.get() == "domain":
                 Vdomain = get_float(self.vars, ALL_LABELS, "Vdomain")
                 Ncells = int(get_float(self.vars, ALL_LABELS, "Ncells"))
+                if Vdomain <= 0:
+                    raise ValueError("Domain volume must be positive.")
+                if Ncells <= 0:
+                    raise ValueError("Number of cells must be positive.")
                 Vcell = Vdomain / Ncells
             else:
                 Vcell = get_float(self.vars, ALL_LABELS, "Vcell")
+                if Vcell <= 0:
+                    raise ValueError("Cell volume must be positive.")
             
-            dx = Vcell ** (1/3)
+            dx = Vcell ** (1.0 / 3.0)
             N_real = n * Vcell
-            nEq = N_real / Nppc
+
+            # Two-way particle weighting
+            if self.particle_mode.get() == "Nppc":
+                Nppc = get_float(self.vars, ALL_LABELS, "Nppc")
+                if Nppc <= 0:
+                    raise ValueError("Particles per cell must be positive.")
+                nEq = N_real / Nppc
+                self.vars["nEquivalentParticles"].set(f"{nEq:.6g}")
+            else:
+                nEq = get_float(self.vars, ALL_LABELS, "nEquivalentParticles")
+                if nEq <= 0:
+                    raise ValueError("nEquivalentParticles must be positive.")
+                Nppc = N_real / nEq
+                self.vars["Nppc"].set(f"{Nppc:.6g}")
             
             lines.append("")
             lines.append("─" * 70)
@@ -708,7 +912,7 @@ For Argon (Ar):
             lines.append(f"  Cell volume, V_cell [m³]       = {fmt(Vcell)}")
             lines.append(f"  Cell size, Δx [m]              = {fmt(dx)}")
             lines.append(f"  Real molecules per cell        = {fmt(N_real)}")
-            lines.append(f"  Target particles per cell      = {Nppc}")
+            lines.append(f"  Particles per cell, Nppc       = {fmt(Nppc)}")
             lines.append(f"  nEquivalentParticles           = {fmt(nEq)}")
             
             if dx > lam:
@@ -784,7 +988,8 @@ For Argon (Ar):
             "mass": "66.3e-27", "dref": "4.17e-10", "omega": "0.81", "Tref": "298.15",
             "gamma": "1.667", "Pr": "0.667", "T": "150", "U": "736.5", "M": "3.0",
             "P": "1.0", "n": "4e20", "Vdomain": "1.0", "Ncells": "100000", 
-            "Vcell": "", "Nppc": "20", "LKn": "0.5", "LRe": "0.5", 
+            "Vcell": "", "Nppc": "20", "nEquivalentParticles": "",
+            "LKn": "0.5", "LRe": "0.5", 
             "compression": "1.0", "f1": "0.2", "f2": "0.3", "x": "0.1", 
             "Tw": "150", "rarefaction": "1.0"
         }
@@ -795,8 +1000,13 @@ For Argon (Ar):
         self.fluid_name_var.set("Argon")
         self.density_mode.set("P")
         self.velocity_mode.set("U")
+        self.mach_constraint_mode.set("U")
         self.volume_mode.set("domain")
+        self.particle_mode.set("Nppc")
         self.viscous_var.set(True)
+
+        self.update_flow_controls()
+        self.update_particle_controls()
     
     def copy_openfoam(self):
         if not self.last_results:
