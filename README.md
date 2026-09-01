@@ -1,6 +1,6 @@
 # DSMC-Calculator
 A graphical calculator for DSMC and rarefied gas dynamics calculations.
-<img width="1650" height="1037" alt="image" src="https://github.com/user-attachments/assets/cc943618-ad79-49cc-99b3-1f8586523589" />
+<img width="825" height="520" alt="image" src="https://github.com/user-attachments/assets/7831f46b-dc63-4ec4-9263-e63254c3f335" />
 
 A lightweight, physics-based engineering tool for the **preliminary design and numerical setup** of Direct Simulation Monte Carlo (DSMC) simulations. It bridges macroscopic flow conditions (pressure, temperature, velocity) with molecular and numerical scales (mean free path, cell size, time step, particle weight).
 
